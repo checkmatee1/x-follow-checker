@@ -1,0 +1,13 @@
+node_modules/
+verification/artifacts/
+.DS_Store
+*.log
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+wallet.json
+keypair.json
+secrets.json
