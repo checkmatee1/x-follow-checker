@@ -1,3 +1,4 @@
+import { resultCsv } from './csv.mjs';
 const $ = id => document.getElementById(id);
 let results = []; let limit = 100; let busy = false;
 function lock(value) { busy = value; $('refresh').disabled = value; $('archive-source').disabled = value; }
@@ -40,7 +41,7 @@ $('archive-source').addEventListener('change', async () => { if (busy) return; l
 $('search').addEventListener('input', () => { limit = 100; render(); });
 $('more').addEventListener('click', () => { limit += 100; render(); });
 $('export').addEventListener('click', () => {
-  const url = URL.createObjectURL(new Blob([globalThis.XFollowData.resultCsv(results, { includeId: true })], { type: 'text/csv;charset=utf-8' }));
+  const url = URL.createObjectURL(new Blob([resultCsv(results, { includeId: true })], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = 'archive-not-following-back.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30_000);
 });
 void refresh();
