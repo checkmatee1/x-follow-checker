@@ -82,7 +82,7 @@ export class ExistingTabScanner {
       await this.pause();
       state = await this.snapshot();
     }
-    throw new Error('无法读取当前账号人数，X 可能限制了访问或已更改页面格式。');
+    throw new Error('已识别账号，但无法读取精确的关注和粉丝人数。请确认自己的资料页已加载；若仅显示 K、万等缩写，当前版本不会据此判断名单完整。');
   }
   async collect(kind, expected, userId) {
     const key = kind.toLowerCase();

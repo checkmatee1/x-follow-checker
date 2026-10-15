@@ -1,4 +1,4 @@
-# 回关检查 · Chrome 扩展版 v2
+# 回关检查 · Chrome 扩展版 v2.0.1
 
 **打开已经登录的 X → 点击扩展 → 扫描。** 不需要填写用户名，不会另开 Chrome 窗口，也不要求重新登录。扩展自动从 X 账户导航识别当前登录账号。
 
@@ -43,3 +43,7 @@ X 可以限流、截断名单、隐藏停用账号或更改响应格式；这些
 需要 Node.js 20+ 与 Playwright 的 Chromium（支持扩展加载）。运行 `npm install`、`npx playwright install chromium` 后运行 `npm test`。测试全部使用临时浏览器配置和仿真网页，不读取现有 Chrome 用户目录或真实凭据。不创建或运行单元测试。
 
 Manifest、账号识别、页面响应桥、扫描与结果展示分别位于 `extension/manifest.json`、`content.js`、`page-bridge.js`、`scan.mjs` 和 `dashboard.js`。参考 [Chrome 内容脚本说明](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)。
+
+## v2.0.1 兼容修复
+
+支持新版 `user_result_by_screen_name.result` 资料根节点。精简资料缺少旧版人数时，仅在自己的资料页面读取精确数字（包括数字标题）；不将 K、万等缩写换算成人数，不将缺失值当成 0。更新本地文件后，请到 `chrome://extensions` 点扩展的重新加载，再关闭旧检查页、刷新 X 并重新点击扩展。

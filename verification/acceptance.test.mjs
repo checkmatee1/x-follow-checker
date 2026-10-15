@@ -48,7 +48,7 @@ async function setup({ mode = 'normal', loggedIn = true } = {}) {
       if (url.pathname.includes('/i/flow/login')) fixture.loginVisits++;
       if (url.pathname.includes('/graphql/')) {
         const operation = url.pathname.split('/').at(-1);
-        const variables = JSON.parse(url.searchParams.get('variables') ?? '{}');
+        const variables = JSON.parse(url.searchParams.get('variables') ?? 'null') ?? route.request().postDataJSON()?.variables ?? {};
         if (operation === 'UserByScreenName') {
           const name = variables.screen_name;
           if (name === 'unrelated' && fixture.mode === 'unrelated-error') return route.fulfill({ status: 500, json: { errors: [{}] } });
@@ -56,6 +56,10 @@ async function setup({ mode = 'normal', loggedIn = true } = {}) {
           const person = user(name === 'target' ? 99 : 101, name);
           person.legacy.friends_count = 3;
           person.legacy.followers_count = fixture.mode === 'incomplete' || (fixture.mode === 'changing' && fixture.profileReads > 1) ? 3 : 2;
+          if (fixture.mode.startsWith('modern-')) {
+            if (fixture.mode !== 'modern-root') { delete person.legacy.friends_count; delete person.legacy.followers_count; }
+            return route.fulfill({ json: { data: { user_result_by_screen_name: { result: person } } } });
+          }
           return route.fulfill({ json: { data: { user: { result: person } } } });
         }
         if (fixture.mode === 'rate-limited' && operation === 'Followers') return route.fulfill({ status: 429, json: {} });
@@ -70,18 +74,22 @@ async function setup({ mode = 'normal', loggedIn = true } = {}) {
       const variables = operation === 'UserByScreenName' ? { screen_name: viewing } : { userId: '99' };
       const shouldFetch = operation !== 'UserByScreenName' || doProfile;
       const html = `<!doctype html><html><head><link rel="icon" href="data:,"></head><body style="height:5000px">
-        <div id="nav"></div><main data-testid="primaryColumn">Synthetic X fixture, viewing ${url.pathname}</main>
+        <div id="nav"></div><main data-testid="primaryColumn">Synthetic X fixture, viewing ${url.pathname}
+          ${fixture.mode.startsWith('modern-') && doProfile ? `<a href="/${viewing}/following"><span ${fixture.mode === 'modern-title' ? 'title="3"' : ''}>${fixture.mode === 'modern-abbreviated' || fixture.mode === 'modern-title' ? '3K' : '3'}</span> Following</a><a href="/${viewing}/followers"><span>2</span> Followers</a>` : ''}</main>
         <script>
         window.__fixtureDebug={bridge:!!window.__x_follow_checker_bridge_v2,data:!!window.XFollowData,events:[]};
         document.addEventListener('x-follow-checker-public-data-v2',event=>window.__fixtureDebug.events.push(JSON.parse(event.detail)));
         const signedIn=document.cookie.includes('fixture_signed_in=yes');
         if(signedIn) document.querySelector('#nav').innerHTML='<button data-testid="SideNav_AccountSwitcher_Button"><span>@${name}</span></button><a data-testid="AppTabBar_Profile_Link" href="/${name}">Profile</a>';
         else document.querySelector('#nav').textContent='Sign in to X';
-        const endpoint='/i/api/graphql/fixture/${operation}?variables='+encodeURIComponent(${JSON.stringify(JSON.stringify(variables))});
+        const postLists=${fixture.mode === 'modern-post' && operation !== 'UserByScreenName'};
+        const variables=${JSON.stringify(variables)};
+        const endpoint='/i/api/graphql/fixture/${operation}'+(postLists?'':'?variables='+encodeURIComponent(JSON.stringify(variables)));
+        const readPage=url=>postLists?fetch(new Request(new URL(url,location.href),{method:'POST',body:JSON.stringify({variables})})):fetch(url);
         if(${Boolean(shouldFetch)} && signedIn){
-          ${operation === 'Followers' ? "const xhr=new XMLHttpRequest();xhr.open('GET',endpoint);xhr.send();" : 'fetch(endpoint);'}
+          ${operation === 'Followers' ? "const xhr=new XMLHttpRequest();xhr.open(postLists?'POST':'GET',endpoint);xhr.send(postLists?JSON.stringify({variables}):null);" : 'readPage(endpoint);'}
           ${fixture.mode === 'unrelated-error' && operation === 'UserByScreenName' ? "fetch('/i/api/graphql/fixture/UserByScreenName?variables='+encodeURIComponent(JSON.stringify({screen_name:'unrelated'})));" : ''}
-          let next=false;addEventListener('scroll',()=>{if(!next && scrollY>150){next=true;fetch(endpoint+'&page=2')}});
+          let next=false;addEventListener('scroll',()=>{if(!next && scrollY>150){next=true;readPage(endpoint+(postLists?'?':'&')+'page=2')}});
         }
         </script></body></html>`;
       await route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
@@ -267,3 +275,22 @@ test('installation guide replaces username form and retires all old scanning API
     assert.equal(foreignHostStatus, 403);
   } finally { await app.close(); }
 });
+
+// Integration regressions for the new profile envelope and count-less profile data.
+for (const mode of ['modern-root', 'modern-lite', 'modern-title', 'modern-post', 'modern-abbreviated']) {
+  test(`profile compatibility through real extension: ${mode}`, { timeout: 20_000 }, async () => {
+    const env = await setup({ mode });
+    try {
+      const outcome = await directScan(env, { navigationTimeout: 1600 });
+      if (mode === 'modern-abbreviated') {
+        assert.match(outcome.error, /无法读取精确/);
+        assert.equal(outcome.results, undefined);
+        assert.equal(env.fixture.paths.some(path => path === '/target/following'), false);
+      } else {
+        assert.equal(outcome.error, undefined);
+        assert.deepEqual(outcome.results.map(person => person.username), ['alice', 'carol']);
+        assert.equal(env.fixture.profileReads, 2);
+      }
+    } finally { await env.close(); }
+  });
+}
