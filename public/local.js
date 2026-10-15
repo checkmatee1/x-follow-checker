@@ -27,11 +27,10 @@ async function compare() {
 async function refresh() {
   if (busy) return; lock(true); clear();
   try {
-    const previous = $('archive-source').value;
     const catalog = await request('/api/archives');
     const choices = catalog.archives.map(archive => { const option = document.createElement('option'); option.value = archive.id; option.textContent = archive.label + (archive.type === 'zip' ? '（ZIP）' : '（已解压）'); return option; });
     $('archive-source').replaceChildren(...choices);
-    if (catalog.archives.some(archive => archive.id === previous)) $('archive-source').value = previous;
+    if (choices.length) $('archive-source').value = catalog.archives[0].id;
     if (!choices.length) { $('status').textContent = '还没有存档。把下载完成的 ZIP 或解压后的存档放入 archives，再点刷新文件夹。'; return; }
     await compare();
   } catch (error) { fail(error); } finally { lock(false); }

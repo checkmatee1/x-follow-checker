@@ -451,9 +451,14 @@ test('folder homepage reads dropped ZIP automatically, refreshes, separates arch
     });
     await page.locator('#refresh').click();
     await until(async () => !(await page.locator('#refresh').isDisabled()), 'folder refresh completed');
+    assert.equal(await page.locator('#archive-source').inputValue(), 'second.zip');
+    assert.equal(await page.locator('#result-count').textContent(), '1');
+    await page.locator('#archive-source').selectOption('download.zip');
+    await until(async () => (await page.locator('#result-count').textContent()) === '120', 'manual older archive selection');
     assert.equal(await page.locator('#archive-source').inputValue(), 'download.zip');
-    assert.equal(await page.locator('#result-count').textContent(), '120');
-    await page.locator('#archive-source').selectOption('second.zip');
+    await page.locator('#refresh').click();
+    await until(async () => !(await page.locator('#refresh').isDisabled()), 'refresh resets to latest archive');
+    assert.equal(await page.locator('#archive-source').inputValue(), 'second.zip');
     await until(async () => (await page.locator('#result-count').textContent()) === '1', 'separate archive result');
     assert.match(await page.locator('#rows').textContent(), /999/);
     await page.reload();
