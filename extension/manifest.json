@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "回关检查 · X 本地工具",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "minimum_chrome_version": "111",
   "description": "默认离线导入 X 官方存档，在本机筛选未回关名单；可选在线扫描。离线无需登录或访问 X。",
   "host_permissions": ["https://x.com/*"],
