@@ -11,3 +11,6 @@ id_ed25519
 wallet.json
 keypair.json
 secrets.json
+
+/archives/*
+!/archives/README.md

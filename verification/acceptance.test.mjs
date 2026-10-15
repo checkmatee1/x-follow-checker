@@ -3,7 +3,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, rm, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile, symlink, truncate } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -263,7 +265,7 @@ test('content-message integration reports overflow instead of truncating into a 
 test('installation guide replaces username form and retires all old scanning APIs', async () => {
   const app = await createApp();
   try {
-    const response = await fetch(app.origin);
+    const response = await fetch(app.origin + '/install');
     const html = await response.text();
     assert.equal(response.status, 200);
     assert.match(html, /chrome:\/\/extensions/);
@@ -388,4 +390,112 @@ test('offline archive UI rejects invalid, swapped, missing, duplicate and execut
     assert.equal(await env.dashboard.locator('#offline-card').isVisible(), true);
     assert.deepEqual(env.errors, []);
   } finally { await env.close(); }
+});
+
+
+const runFixture = promisify(execFile);
+async function zipFixture(filename, entries) {
+  // Synthetic records only. No existing user archive or private file is opened.
+  await runFixture('python3', ['-c', `import json,sys,zipfile
+with zipfile.ZipFile(sys.argv[1], 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+ for name, text in json.loads(sys.argv[2]).items(): archive.writestr(name, text)
+`, filename, JSON.stringify(entries)]);
+}
+const partText = (kind, part, rows) => archiveFile(kind, part, rows).buffer.toString();
+const postArchive = (origin, id, headers = {}) => fetch(origin + '/api/compare', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ id }) });
+
+test('folder homepage reads dropped ZIP automatically, refreshes, separates archives, searches and exports without external requests', { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-folder-ui-'));
+  const app = await createApp({ archiveDirectory: directory });
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: 'chromium', headless: true });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 1050 }, acceptDownloads: true });
+    const network = []; const errors = [];
+    page.on('request', request => { if (/^https?:/.test(request.url())) network.push(request.url()); });
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(app.origin);
+    await until(async () => (await page.locator('#status').textContent()).includes('还没有存档'), 'empty folder guidance');
+    const rows = Array.from({ length: 120 }, (_, i) => archiveRow('following', i + 1));
+    rows.push(archiveRow('following', '9007199254740993', { name: '<img src=x onerror=alert(1)>' }), archiveRow('following', 121, { name: '=2+2' }));
+    await zipFixture(path.join(directory, 'download.zip'), {
+      'twitter-archive/data/following.js': partText('following', 0, rows.slice(0, 61)),
+      'twitter-archive/data/following-part1.js': partText('following', 1, rows.slice(61)),
+      'twitter-archive/data/follower.js': partText('follower', 0, [archiveRow('follower', 2), archiveRow('follower', 4)]),
+      'twitter-archive/data/direct-messages.js': 'not a relationship file; this content must never be parsed'
+    });
+    await page.locator('#refresh').click();
+    await page.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#result-count').textContent(), '120');
+    assert.equal(await page.locator('#rows tr').count(), 100);
+    await page.locator('#more').click();
+    assert.equal(await page.locator('#rows tr').count(), 120);
+    assert.equal(await page.locator('#rows img').count(), 0);
+    await page.locator('#search').fill('9007199254740993');
+    assert.equal(await page.locator('#rows tr').count(), 1);
+    assert.equal(await page.locator('#rows a').getAttribute('href'), 'https://x.com/i/user/9007199254740993');
+    const pending = page.waitForEvent('download');
+    await page.locator('#export').click();
+    const download = await pending;
+    const csv = await readFile(await download.path(), 'utf8');
+    assert.match(csv, /9007199254740993/);
+    assert.match(csv, /"'=2\+2"/);
+    await page.locator('#search').fill('');
+    await page.screenshot({ path: path.join(scratch, 'folder-results.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: path.join(scratch, 'folder-mobile.png'), fullPage: true });
+    await zipFixture(path.join(directory, 'second.zip'), {
+      'data/following.js': partText('following', 0, [archiveRow('following', 999)]),
+      'data/follower.js': partText('follower', 0, [])
+    });
+    await page.locator('#refresh').click();
+    await until(async () => !(await page.locator('#refresh').isDisabled()), 'folder refresh completed');
+    assert.equal(await page.locator('#archive-source').inputValue(), 'download.zip');
+    assert.equal(await page.locator('#result-count').textContent(), '120');
+    await page.locator('#archive-source').selectOption('second.zip');
+    await until(async () => (await page.locator('#result-count').textContent()) === '1', 'separate archive result');
+    assert.match(await page.locator('#rows').textContent(), /999/);
+    await page.reload();
+    await page.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#archive-source').inputValue(), 'second.zip');
+    await writeFile(path.join(directory, 'second.zip'), 'incomplete download');
+    await page.locator('#refresh').click();
+    await page.locator('#error').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#results').isVisible(), false);
+    assert.equal(network.every(url => new URL(url).origin === app.origin), true);
+    assert.deepEqual(errors, []);
+  } finally { if (browser) await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('folder API handles extracted shards and rejects path escape, mixed ZIPs, oversized files and foreign origins', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-folder-api-'));
+  const app = await createApp({ archiveDirectory: directory });
+  try {
+    for (const [name, id] of [['one', 41], ['two', 42]]) {
+      const data = path.join(directory, name, 'data'); await mkdir(data, { recursive: true });
+      await writeFile(path.join(data, 'following.js'), partText('following', 0, [archiveRow('following', id)]));
+      await writeFile(path.join(data, 'follower.js'), partText('follower', 0, []));
+    }
+    await symlink(path.join(directory, 'one'), path.join(directory, 'linked'));
+    await symlink(path.join(directory, 'one/data/following.js'), path.join(directory, 'following.js'));
+    const catalog = await (await fetch(app.origin + '/api/archives')).json();
+    assert.equal(catalog.archives.length, 2);
+    assert.equal(JSON.stringify(catalog).includes('accountId'), false);
+    const result = await (await postArchive(app.origin, 'one/data')).json();
+    assert.deepEqual(result.results.map(row => row.id), ['41']);
+    assert.equal((await postArchive(app.origin, '../one/data')).status, 400);
+    assert.equal((await fetch(app.origin + '/archives/one/data/following.js')).status, 404);
+    assert.equal((await fetch(app.origin + '/api/archives', { headers: { Origin: 'https://evil.invalid' } })).status, 403);
+    assert.equal((await postArchive(app.origin, 'one/data', { 'Content-Type': 'text/plain' })).status, 415);
+    await writeFile(path.join(directory, 'one/data/following-part2.js'), partText('following', 2, []));
+    const gap = await postArchive(app.origin, 'one/data'); assert.equal(gap.status, 400); assert.match((await gap.json()).error, /不连续/);
+    await zipFixture(path.join(directory, 'mixed.zip'), {
+      'a/following.js': partText('following', 0, []), 'a/follower.js': partText('follower', 0, []),
+      'b/following.js': partText('following', 0, []), 'b/follower.js': partText('follower', 0, [])
+    });
+    const mixed = await postArchive(app.origin, 'mixed.zip'); assert.equal(mixed.status, 400); assert.match((await mixed.json()).error, /多组名单/);
+    await truncate(path.join(directory, 'two/data/following.js'), 100 * 1024 * 1024 + 1);
+    const large = await postArchive(app.origin, 'two/data'); assert.equal(large.status, 400); assert.match((await large.json()).error, /100 MB/);
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
