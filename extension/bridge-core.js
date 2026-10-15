@@ -5,13 +5,16 @@
   const { readProfile, readTimeline } = globalThis.XFollowData;
   const eventName = 'x-follow-checker-public-data-v2';
   // Only read bodies of these public-data operations, never headers or cookies.
-  function describe(rawUrl) {
+  function describe(rawUrl, body) {
     try {
       const url = new URL(rawUrl, location.href);
       if (url.origin !== 'https://x.com' || !url.pathname.includes('/graphql/')) return null;
       const operation = url.pathname.split('/').at(-1);
       if (!['UserByScreenName', 'Following', 'Followers'].includes(operation)) return null;
-      const variables = JSON.parse(url.searchParams.get('variables') ?? '{}');
+      const encoded = url.searchParams.get('variables');
+      let variables = encoded ? JSON.parse(encoded) : (typeof body === 'string' ? JSON.parse(body).variables : {});
+      if (typeof variables === 'string') variables = JSON.parse(variables);
+      variables ??= {};
       return { operation, userId: String(variables.userId ?? ''), username: variables.screen_name, path: location.pathname };
     } catch { return null; }
   }
@@ -31,11 +34,23 @@
   }
   const originalFetch = window.fetch;
   window.fetch = function (...args) {
-    const request = describe(typeof args[0] === 'string' || args[0] instanceof URL ? String(args[0]) : args[0]?.url);
+    const rawUrl = typeof args[0] === 'string' || args[0] instanceof URL ? String(args[0]) : args[0]?.url;
+    const initial = describe(rawUrl, args[1]?.body);
+    // Match the operation before looking at its body. Only the variables field is used.
+    let pending = Promise.resolve(initial);
+    if (initial && args[1]?.body === undefined && args[0] instanceof Request && args[0].method === 'POST') {
+      pending = args[0].clone().text().then(body => { const request = describe(rawUrl, body); return request ? { ...request, path: initial.path } : initial; }).catch(() => initial);
+    }
     return originalFetch.apply(this, args).then(response => {
-      if (request) {
-        if (!response.ok) publish(request, response.status, null);
-        else void response.clone().json().then(payload => publish(request, response.status, payload)).catch(() => publish(request, 200, { errors: [{}] }));
+      if (initial) {
+        const copy = response.ok ? response.clone() : null;
+        void pending.then(async request => {
+          if (!response.ok) publish(request, response.status, null);
+          else {
+            try { publish(request, response.status, await copy.json()); }
+            catch { publish(request, 200, { errors: [{}] }); }
+          }
+        });
       }
       return response;
     });
@@ -43,12 +58,13 @@
   const open = XMLHttpRequest.prototype.open;
   const requests = new WeakMap();
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-    requests.set(this, describe(url));
+    requests.set(this, { url, request: describe(url) });
     return open.call(this, method, url, ...rest);
   };
   const send = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function (...args) {
-    const request = requests.get(this);
+    const tracked = requests.get(this);
+    const request = tracked?.request ? describe(tracked.url, args[0]) : null;
     if (request) this.addEventListener('load', () => {
       try {
         const payload = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);

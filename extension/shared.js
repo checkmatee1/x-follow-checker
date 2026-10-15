@@ -8,12 +8,14 @@
     return { id: String(user.rest_id), username, name: String(user.core?.name ?? user.legacy?.name ?? username).slice(0, 300), url: `https://x.com/${username}` };
   }
   function readProfile(payload) {
-    const raw = unwrap(payload?.data?.user?.result);
+    // New profile responses use a different root and may omit legacy counts.
+    const raw = unwrap(payload?.data?.user_result_by_screen_name?.result ?? payload?.data?.user?.result);
     const user = publicUser(raw);
     const following = raw?.legacy?.friends_count;
     const followers = raw?.legacy?.followers_count;
-    if (!user || !Number.isSafeInteger(following) || following < 0 || !Number.isSafeInteger(followers) || followers < 0) return null;
-    return { ...user, following, followers };
+    if (!user) return null;
+    const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    return { ...user, following: count(following), followers: count(followers) };
   }
   function readTimeline(payload) {
     const root = unwrap(payload?.data?.user?.result);

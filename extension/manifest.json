@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "回关检查 · X 本地工具",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "minimum_chrome_version": "111",
   "description": "自动识别当前 X 登录账号，在本机筛选未回关名单。无需填写用户名或重新登录。",
   "host_permissions": ["https://x.com/*"],
