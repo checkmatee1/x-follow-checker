@@ -10,6 +10,6 @@ export function loadPlaywright() {
   // Optional reuse of Codex's installed library; never reads browser profiles.
   const bundled = path.join(homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
   try { return require(bundled); } catch {
-    throw new Error('缺少运行依赖。请在工具文件夹内运行 npm install，然后重新启动。');
+    throw new Error('缺少验收依赖。请在工具文件夹内运行 npm install 后再运行 npm test。');
   }
 }

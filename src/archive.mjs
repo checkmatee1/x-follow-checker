@@ -16,7 +16,7 @@ function parsePart(text, kind) {
   }
   let rows;
   try { rows = JSON.parse(source); } catch { throw new Error('文件不是有效的 X 名单存档，请选择 follower.js / following.js，文件不会作为脚本执行。'); }
-  if (!Array.isArray(rows)) throw new Error('名单内容必须是数组，请勿选择完整存档 ZIP 或其他账号资料文件。');
+  if (!Array.isArray(rows)) throw new Error('存档内的关注和粉丝名单内容必须是数组，请使用原始名单文件。');
   if (rows.length > MAX_ROWS) throw new Error('单份名单超过 1,000,000 条，请减少文件规模。');
   const users = rows.map(row => {
     const account = row?.[kind];
@@ -29,7 +29,7 @@ function parsePart(text, kind) {
 }
 
 async function readList(files, kind) {
-  if (!files.length) throw new Error('请分别选择关注和粉丝名单文件，空名单也需要选择对应文件。');
+  if (!files.length) throw new Error('存档缺少关注或粉丝名单，空名单也需要对应文件。请放入完整存档。');
   const parts = new Map();
   const users = new Map();
   let rawRows = 0;
@@ -48,7 +48,7 @@ async function readList(files, kind) {
     }
   }
   const indexes = [...parts.keys()].sort((a, b) => a - b);
-  if (indexes.some((index, position) => index !== position)) throw new Error('名单分片不连续或缺少 part0，请选择同一存档的全部名单分片。');
+  if (indexes.some((index, position) => index !== position)) throw new Error('名单分片不连续或缺少 part0，请放入同一存档的全部名单分片。');
   return [...users.values()];
 }
 

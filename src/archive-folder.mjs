@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { compareArchive } from '../extension/archive.mjs';
+import { compareArchive } from './archive.mjs';
 const run = promisify(execFile);
 const helper = fileURLToPath(new URL('../scripts/read-archive-zip.py', import.meta.url));
 const LIMIT = 100 * 1024 * 1024;

@@ -5,7 +5,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { archiveCatalog, compareFolderArchive } from './archive-folder.mjs';
 const defaultArchiveDirectory = fileURLToPath(new URL('../archives', import.meta.url));
-const extensionDirectory = fileURLToPath(new URL('../extension', import.meta.url));
 const escapeHtml = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
 export async function createApp({ port = 0, archiveDirectory = defaultArchiveDirectory } = {}) {
@@ -15,16 +14,11 @@ export async function createApp({ port = 0, archiveDirectory = defaultArchiveDir
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
-    // The health endpoint exposes only a constant service marker, never archive metadata.
-    if (req.headers.host === new URL(origin).host && req.url === '/health' && req.method === 'GET') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ service: 'x-follow-checker-folder', protocol: 1 }));
-    }
     if (req.headers.host !== new URL(origin).host || (req.headers.origin && req.headers.origin !== origin) || ['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'])) { res.writeHead(403); return res.end('Forbidden'); }
     const reply = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); };
     try {
       const pathname = new URL(req.url, origin).pathname;
+      if (pathname === '/health' && req.method === 'GET') return reply(200, { service: 'x-follow-checker-folder', protocol: 1 });
       if (pathname === '/api/archives' && req.method === 'GET') {
         const groups = await archiveCatalog(archiveDirectory);
         return reply(200, { directory: archiveDirectory, archives: groups.map(({ id, label, type, signature }) => ({ id, label, type, signature })) });
@@ -38,16 +32,16 @@ export async function createApp({ port = 0, archiveDirectory = defaultArchiveDir
         if (typeof input.id !== 'string') return reply(400, { error: '请选择一份存档。' });
         return reply(200, await compareFolderArchive(archiveDirectory, input.id));
       }
-      if (pathname.startsWith('/api/')) return reply(410, { error: '旧在线扫描 API 已停用，请使用本地存档比较。' });
+      if (pathname.startsWith('/api/')) return reply(404, { error: '接口不存在。' });
       const assets = {
-        '/': ['../public/folder.html', 'text/html'], '/install': ['../public/index.html', 'text/html'],
-        '/style.css': ['../extension/style.css', 'text/css'], '/local.js': ['../public/local.js', 'text/javascript'],
-        '/shared.js': ['../extension/shared.js', 'text/javascript']
+        '/': ['../public/folder.html', 'text/html'],
+        '/style.css': ['../public/style.css', 'text/css'], '/local.js': ['../public/local.js', 'text/javascript'],
+        '/csv.mjs': ['../public/csv.mjs', 'text/javascript']
       };
       if (req.method !== 'GET' || !assets[pathname]) { res.writeHead(404); return res.end('Not found'); }
       const [file, type] = assets[pathname];
       let content = await readFile(new URL(file, import.meta.url), 'utf8');
-      content = content.replaceAll('__EXTENSION_DIRECTORY__', escapeHtml(extensionDirectory)).replaceAll('__ARCHIVE_DIRECTORY__', escapeHtml(archiveDirectory));
+      content = content.replaceAll('__ARCHIVE_DIRECTORY__', escapeHtml(archiveDirectory));
       res.writeHead(200, { 'Content-Type': type + '; charset=utf-8' }); res.end(content);
     } catch (error) {
       reply(400, { error: error.code ? '无法读取存档文件夹，请确认文件已下载完成且位于 archives 中。' : error.message });
@@ -82,7 +76,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     openProject();
   }
   if (app) {
-    console.log(`\n本地存档检查：${app.origin}\n存档投放目录：${defaultArchiveDirectory}\n放入 ZIP 或解压后的存档，点击扩展即可查看。退出请按 Control+C。\n`);
+    console.log(`\n本地存档检查：${app.origin}\n存档投放目录：${defaultArchiveDirectory}\n放入 ZIP 或解压后的存档，网页会自动读取名单。退出请按 Control+C。\n`);
     openProject();
     const stop = async () => { await app.close(); process.exit(0); };
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
