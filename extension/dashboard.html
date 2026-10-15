@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>回关检查 · 当前 X 账号</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css"><script src="shared.js"></script><script type="module" src="dashboard.js"></script></head>
+<body>
+  <header class="topbar"><a href="dashboard.html" class="brand"><span class="brand-icon">↗</span> 回关检查<span class="brand-tag">FOR X</span></a><span class="local-badge"><i></i> 复用当前 Chrome 登录</span></header>
+  <main>
+    <section class="intro"><span class="eyebrow">YOUR FOLLOWING, A LITTLE CLEARER.</span><h1>看看谁还没<span>回关你。</span></h1><p>自动识别你的 X 账号，一键检查关注关系。<br>使用现有登录状态，结果只在本机处理。</p></section>
+    <section class="scan-card" aria-label="扫描当前账号"><div class="card-heading"><h2>当前登录账号</h2><span class="pill">无需重复登录</span></div>
+      <div class="input-row"><strong id="account" aria-live="polite">正在识别…</strong><button id="start" disabled>扫描我的未回关 <span aria-hidden="true">↗</span></button><button id="reconnect" class="secondary">重新识别</button></div>
+      <p class="hint" id="connection">正在连接你已有的 X 标签页…</p>
+      <p class="hint">扫描会在原 X 标签页自动翻页，完成后恢复原页面；不会关闭标签页或退出账号。</p>
+      <div class="steps"><span><b>01</b> 自动识别账号</span><span><b>02</b> 点击扫描</span><span><b>03</b> 查看未回关</span></div>
+    </section>
+    <section id="progress" class="progress-card" hidden><div class="status-line"><span id="status-label" class="status-label"></span><span id="target"></span></div><p id="message" role="status" aria-live="polite"></p><div class="counts"><div><span>已读取关注</span><strong id="following-count">0</strong></div><div><span>已读取粉丝</span><strong id="followers-count">0</strong></div></div><div class="progress-track" role="progressbar" aria-label="读取进度" aria-valuemin="0" aria-valuemax="100"><div id="progress-fill"></div></div><div class="actions"><button id="cancel" class="secondary" hidden>取消本次扫描</button></div></section>
+    <p id="error" class="error" role="alert" hidden></p>
+    <section id="results" class="results-card" hidden><div class="results-heading"><div><span class="eyebrow">YOUR RESULTS</span><h2>未回关 <span id="result-count">0</span></h2></div><button id="export" class="secondary">导出 CSV ↓</button></div><p class="result-note">两份名单人数均已核对。结果反映本次读取情况，关系可能随时变化。</p><label class="search-label" for="search">搜索结果</label><input id="search" type="search" placeholder="搜索用户名或名称…" autocomplete="off"><div class="table-scroll"><table><thead><tr><th>账号</th><th>用户名</th><th><span class="sr-only">查看主页</span></th></tr></thead><tbody id="rows"></tbody></table></div><p id="empty" class="empty" hidden></p><p id="showing" class="hint"></p><button id="more" class="secondary" hidden>再显示 100 人</button></section>
+    <section id="welcome" class="welcome"><div class="orbit">↔</div><h3>不用填写用户名，也不用重新登录</h3><p>保留已经登录的 X 标签页，点击扫描即可。<br>如果你在 X 切换了账号，请先点击重新识别。</p></section>
+    <footer><span>只读取关系，不执行取关。</span><span>不提取 Cookie · 不关闭你的 Chrome</span><p>X 若限制名单读取，工具会提示未完成，不会生成未回关结论。关闭此检查页会停止扫描，结果不会持久保存。</p></footer>
+  </main>
+</body></html>
