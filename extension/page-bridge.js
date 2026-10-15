@@ -38,13 +38,13 @@
     const ids = new Set(followers.map(user => user.id));
     return following.filter(user => !ids.has(user.id)).sort((a, b) => a.username.toLowerCase().localeCompare(b.username.toLowerCase(), 'en'));
   }
-  function resultCsv(rows) {
+  function resultCsv(rows, { includeId = false } = {}) {
     const cell = value => {
       let text = String(value);
       if (/^[\s\uFEFF]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text)) text = "'" + text;
       return '"' + text.replaceAll('"', '""') + '"';
     };
-    return '\uFEFF' + [['用户名', '名称', '主页链接'], ...rows.map(row => [row.username, row.name, row.url])].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
+    return '\uFEFF' + [[...(includeId ? ['账号ID'] : []), '用户名', '名称', '主页链接'], ...rows.map(row => [...(includeId ? [row.id] : []), row.username ?? '', row.name, row.url])].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
   }
   globalThis.XFollowData = Object.freeze({ validName, publicUser, readProfile, readTimeline, compareLists, resultCsv });
 })();

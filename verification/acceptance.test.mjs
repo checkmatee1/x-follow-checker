@@ -27,7 +27,7 @@ async function until(predicate, label, timeout = 15_000) {
     await delay(50);
   }
 }
-async function setup({ mode = 'normal', loggedIn = true } = {}) {
+async function setup({ mode = 'normal', loggedIn = true, online = true } = {}) {
   const profileDirectory = await mkdtemp(path.join(tmpdir(), 'x-checker-acceptance-'));
   let context;
   try {
@@ -101,7 +101,11 @@ async function setup({ mode = 'normal', loggedIn = true } = {}) {
     const errors = [];
     dashboard.on('pageerror', error => errors.push(error.message));
     await dashboard.goto(`chrome-extension://${extensionId}/dashboard.html?tab=${sourceId}`);
-    if (loggedIn) await until(async () => (await dashboard.locator('#account').textContent()) === '@target', 'connection ready');
+    if (online && loggedIn) {
+      await dashboard.locator('#online-mode').click();
+      await dashboard.locator('#reconnect').click();
+      await until(async () => (await dashboard.locator('#account').textContent()) === '@target', 'connection ready');
+    }
     return { context, source, sourceId, dashboard, worker, fixture, extensionId, errors, async close() { await context.close(); await rm(profileDirectory, { recursive: true, force: true }); } };
   } catch (error) { await context?.close(); await rm(profileDirectory, { recursive: true, force: true }); throw error; }
 }
@@ -122,7 +126,7 @@ test('real extension E2E: detect self from other profile, reuse login, scan, sea
     await until(async () => (await env.dashboard.locator('#account').textContent()) === '@target', 'auto-detect self');
     assert.equal(await env.dashboard.locator('#username').count(), 0);
     assert.equal(await env.dashboard.locator('#confirm').count(), 0);
-    assert.equal(await env.dashboard.locator('input:not([type="search"])').count(), 0);
+    assert.equal(await env.dashboard.locator('input:not([type="search"]):not([type="file"])').count(), 0);
     assert.equal(await env.worker.evaluate(async () => (await chrome.windows.getAll()).length), 1);
     await mkdir(scratch, { recursive: true });
     await env.dashboard.screenshot({ path: path.join(scratch, 'extension-ready.png'), fullPage: true });
@@ -294,3 +298,94 @@ for (const mode of ['modern-root', 'modern-lite', 'modern-title', 'modern-post',
     } finally { await env.close(); }
   });
 }
+
+const archiveFile = (kind, part, rows) => ({ name: `${kind}${part ? '-part' + part : ''}.js`, mimeType: 'text/javascript', buffer: Buffer.from(`window.YTD.${kind}.part${part} = ${JSON.stringify(rows)};`) });
+const archiveRow = (kind, id, extra = {}) => ({ [kind]: { accountId: String(id), userLink: `https://x.com/intent/user?user_id=${id}`, ...extra } });
+
+test('offline archive UI works without X tabs or login: multipart, IDs, search, CSV, pagination, no network', { timeout: 20_000 }, async () => {
+  const env = await setup({ loggedIn: false, online: false });
+  try {
+    await env.source.close();
+    const network = [];
+    env.context.on('request', request => { if (/^https?:/.test(request.url())) network.push(request.url()); });
+    assert.equal(await env.dashboard.locator('#offline-mode').getAttribute('aria-selected'), 'true');
+    assert.equal(await env.dashboard.locator('#online-card').isVisible(), false);
+    assert.equal(await env.dashboard.locator('#import-archive').isDisabled(), true);
+    await env.dashboard.reload();
+    assert.equal(await env.dashboard.locator('#account').textContent(), '尚未连接');
+    const rows = Array.from({ length: 120 }, (_, i) => archiveRow('following', i + 1, i === 0 ? { name: '<img src=x onerror=alert(1)>' } : {}));
+    rows.push(archiveRow('following', '9007199254740993'), archiveRow('following', 121, { screenName: 'named_user', name: '=2+2' }));
+    await env.dashboard.locator('#following-files').setInputFiles([
+      archiveFile('following', 1, [...rows.slice(61), rows[2]]), archiveFile('following', 0, rows.slice(0, 61))
+    ]);
+    await env.dashboard.locator('#follower-files').setInputFiles(archiveFile('follower', 0, [archiveRow('follower', 2), archiveRow('follower', 4)]));
+    await env.dashboard.locator('#import-archive').click();
+    await env.dashboard.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(await env.dashboard.locator('#result-count').textContent(), '120');
+    assert.match(await env.dashboard.locator('#following-count').textContent(), /122/);
+    assert.equal(await env.dashboard.locator('#rows tr').count(), 100);
+    assert.equal(await env.dashboard.locator('#rows img').count(), 0);
+    await env.dashboard.locator('#more').click();
+    assert.equal(await env.dashboard.locator('#rows tr').count(), 120);
+    assert.match(await env.dashboard.locator('#rows').textContent(), /<img src=x onerror=alert/);
+    await env.dashboard.locator('#search').fill('9007199254740993');
+    assert.equal(await env.dashboard.locator('#rows tr').count(), 1);
+    assert.equal(await env.dashboard.locator('#rows a').getAttribute('href'), 'https://x.com/i/user/9007199254740993');
+    assert.doesNotMatch(await env.dashboard.locator('#rows').textContent(), /@null|@undefined/);
+    const pending = env.dashboard.waitForEvent('download');
+    await env.dashboard.locator('#export').click();
+    const download = await pending;
+    const csv = await readFile(await download.path(), 'utf8');
+    assert.equal(download.suggestedFilename(), 'archive-not-following-back.csv');
+    assert.match(csv, /账号ID/);
+    assert.match(csv, /9007199254740993/);
+    assert.match(csv, /"'=2\+2"/);
+    assert.match(await env.dashboard.locator('#result-note').textContent(), /不是实时/);
+    await env.dashboard.locator('#search').fill('');
+    await env.dashboard.screenshot({ path: path.join(scratch, 'offline-results.png'), fullPage: true });
+    await env.dashboard.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await env.dashboard.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await env.dashboard.screenshot({ path: path.join(scratch, 'offline-mobile.png'), fullPage: true });
+    await env.dashboard.locator('#following-files').setInputFiles([]);
+    assert.equal(await env.dashboard.locator('#results').isVisible(), false);
+    assert.equal(await env.dashboard.locator('#import-archive').isDisabled(), true);
+    assert.deepEqual(network, []);
+    assert.deepEqual(env.errors, []);
+  } finally { await env.close(); }
+});
+
+test('offline archive UI rejects invalid, swapped, missing, duplicate and executable inputs with no stale results', { timeout: 20_000 }, async () => {
+  const env = await setup({ loggedIn: false, online: false });
+  try {
+    await env.source.close();
+    const good = archiveFile('follower', 0, []);
+    const invalidCases = [
+      [archiveFile('follower', 0, [archiveRow('follower', 1)]), /选反/],
+      [archiveFile('following', 1, []), /不连续/],
+      [[archiveFile('following', 0, []), { ...archiveFile('following', 0, []), name: 'copy.js' }], /重复/],
+      [archiveFile('following', 0, [{ following: { accountId: 9007199254740992 } }]), /无效的账号 ID/],
+      [{ name: 'following.js', mimeType: 'text/javascript', buffer: Buffer.from('window.YTD.following.part0 = []; window.__archiveExecuted=true;') }, /不是有效/],
+      [{ name: 'following.js', mimeType: 'text/javascript', buffer: Buffer.from('window.YTD.following.part0 = [') }, /不是有效/]
+    ];
+    for (const [files, expected] of invalidCases) {
+      await env.dashboard.locator('#following-files').setInputFiles(files);
+      await env.dashboard.locator('#follower-files').setInputFiles(good);
+      await env.dashboard.locator('#import-archive').click();
+      await until(async () => (await env.dashboard.locator('#status-label').textContent()) === '导入未完成', 'invalid archive rejected');
+      assert.match(await env.dashboard.locator('#message').textContent(), expected);
+      assert.equal(await env.dashboard.locator('#results').isVisible(), false);
+      assert.equal(await env.dashboard.evaluate(() => window.__archiveExecuted), undefined);
+    }
+    await env.dashboard.locator('#following-files').setInputFiles(archiveFile('following', 0, []));
+    await env.dashboard.locator('#import-archive').click();
+    await env.dashboard.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(await env.dashboard.locator('#result-count').textContent(), '0');
+    assert.match(await env.dashboard.locator('#empty').textContent(), /所选存档/);
+    await env.dashboard.locator('#online-mode').click();
+    assert.equal(await env.dashboard.locator('#results').isVisible(), false);
+    assert.equal(await env.dashboard.locator('#account').textContent(), '尚未连接');
+    await env.dashboard.locator('#offline-mode').click();
+    assert.equal(await env.dashboard.locator('#offline-card').isVisible(), true);
+    assert.deepEqual(env.errors, []);
+  } finally { await env.close(); }
+});
