@@ -504,3 +504,53 @@ test('folder API handles extracted shards and rejects path escape, mixed ZIPs, o
     const large = await postArchive(app.origin, 'two/data'); assert.equal(large.status, 400); assert.match((await large.json()).error, /100 MB/);
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+
+test('extension action opens project folder results; stopped or unrelated service opens startup guide with manual fallback', { timeout: 25_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-extension-entry-'));
+  let app = await createApp({ archiveDirectory: directory });
+  let fake;
+  const env = await setup({ loggedIn: false, online: false });
+  try {
+    await writeFile(path.join(directory, 'following.js'), partText('following', 0, [archiveRow('following', 123)]));
+    await writeFile(path.join(directory, 'follower.js'), partText('follower', 0, []));
+    const before = [...env.fixture.paths];
+    const next = env.context.waitForEvent('page');
+    await env.worker.evaluate(async ({ id, origin }) => { await openProject(await chrome.tabs.get(id), origin); }, { id: env.sourceId, origin: app.origin });
+    const page = await next;
+    await page.waitForURL(app.origin + '/');
+    await page.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#result-count').textContent(), '1');
+    assert.match(await page.locator('#rows').textContent(), /123/);
+    assert.equal(await page.locator('input[type="file"]').count(), 0);
+    assert.equal(await page.locator('#archive-source').count(), 1);
+    const health = await fetch(app.origin + '/health', { headers: { Origin: 'chrome-extension://' + env.extensionId } });
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { service: 'x-follow-checker-folder', protocol: 1 });
+    assert.equal((await fetch(app.origin + '/api/archives', { headers: { Origin: 'chrome-extension://' + env.extensionId } })).status, 403);
+    const stoppedOrigin = app.origin;
+    await app.close(); app = null;
+    const fallbackEvent = env.context.waitForEvent('page');
+    await env.worker.evaluate(async ({ id, origin }) => { await openProject(await chrome.tabs.get(id), origin); }, { id: env.sourceId, origin: stoppedOrigin });
+    const guide = await fallbackEvent;
+    await guide.waitForURL(`chrome-extension://${env.extensionId}/launch.html?tab=${env.sourceId}`);
+    await guide.locator('#manual').waitFor();
+    assert.match(await guide.locator('main').textContent(), /启动工具.command/);
+    assert.equal(await guide.locator('input[type="file"]').count(), 0);
+    assert.equal(await guide.locator('#manual').evaluate(link => new URL(link.href).searchParams.get('tab')), String(env.sourceId));
+    await guide.screenshot({ path: path.join(scratch, 'extension-project-guide.png'), fullPage: true });
+    await guide.locator('#manual').click();
+    await guide.waitForURL(`chrome-extension://${env.extensionId}/dashboard.html?tab=${env.sourceId}`);
+    assert.equal(await guide.locator('#following-files').count(), 1);
+    fake = http.createServer((req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ service: 'unrelated' })); });
+    await new Promise(resolve => fake.listen(0, '127.0.0.1', resolve));
+    const unrelatedEvent = env.context.waitForEvent('page');
+    await env.worker.evaluate(async origin => { await openProject(null, origin); }, `http://127.0.0.1:${fake.address().port}`);
+    const unrelatedGuide = await unrelatedEvent;
+    await unrelatedGuide.waitForURL(`chrome-extension://${env.extensionId}/launch.html`);
+    assert.deepEqual(env.fixture.paths, before);
+    assert.deepEqual(env.errors, []);
+  } finally {
+    await env.close(); if (app) await app.close(); if (fake) await new Promise(resolve => fake.close(resolve)); await rm(directory, { recursive: true, force: true });
+  }
+});
