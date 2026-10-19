@@ -1,13 +1,16 @@
-// Local-only archive folder reader. No X network requests.
+// Local archive comparison; public username lookups run only on explicit request.
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { archiveCatalog, compareFolderArchive } from './archive-folder.mjs';
+import path from 'node:path';
+import { createProfileCache } from './profiles.mjs';
 const defaultArchiveDirectory = fileURLToPath(new URL('../archives', import.meta.url));
 const escapeHtml = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
-export async function createApp({ port = 0, archiveDirectory = defaultArchiveDirectory } = {}) {
+export async function createApp({ port = 0, archiveDirectory = defaultArchiveDirectory, profileLookup } = {}) {
+  const profiles = createProfileCache(path.join(archiveDirectory, '.profile-cache'), { lookup: profileLookup });
   let origin;
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -23,14 +26,17 @@ export async function createApp({ port = 0, archiveDirectory = defaultArchiveDir
         const groups = await archiveCatalog(archiveDirectory);
         return reply(200, { directory: archiveDirectory, archives: groups.map(({ id, label, type, signature }) => ({ id, label, type, signature })) });
       }
-      if (pathname === '/api/compare' && req.method === 'POST') {
+      if (['/api/compare', '/api/profiles'].includes(pathname) && req.method === 'POST') {
         if (!req.headers['content-type']?.startsWith('application/json')) return reply(415, { error: '需要 JSON 请求。' });
         let body = ''; let size = 0;
         for await (const chunk of req) { size += chunk.length; if (size > 16_384) { reply(413, { error: '请求过大。' }); return; } body += chunk; }
         let input;
         try { input = JSON.parse(body); } catch { return reply(400, { error: '请求格式无效。' }); }
+        if (pathname === '/api/profiles') return reply(200, await profiles.resolve(input.ids, { force: input.force ?? false }));
         if (typeof input.id !== 'string') return reply(400, { error: '请选择一份存档。' });
-        return reply(200, await compareFolderArchive(archiveDirectory, input.id));
+        const comparison = await compareFolderArchive(archiveDirectory, input.id);
+        comparison.results = await profiles.enrich(comparison.results);
+        return reply(200, comparison);
       }
       if (pathname.startsWith('/api/')) return reply(404, { error: '接口不存在。' });
       const assets = {

@@ -186,3 +186,71 @@ test('standalone local assets, health and request boundaries work without retire
     assert.equal((await fetch(app.origin + '/api/compare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'x'.repeat(17000) }) })).status, 413);
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test('public username workflow persists cache across reload and restart, updates on demand and keeps results on failure', { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-profile-ui-'));
+  let calls = []; let revision = 1; let unavailable = false;
+  const lookup = async id => {
+    calls.push(id);
+    if (unavailable) throw new Error('公开查询暂不可用');
+    if (id === '103') return null;
+    return { username: `user${id}v${revision}`, name: `Name ${id} v${revision}` };
+  };
+  await writeFile(path.join(directory, 'following.js'), partText('following', 0, ['101', '102', '103'].map(id => archiveRow('following', id))));
+  await writeFile(path.join(directory, 'follower.js'), partText('follower', 0, []));
+  let app = await createApp({ archiveDirectory: directory, profileLookup: lookup });
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: 'chromium', headless: true });
+    const page = await browser.newPage();
+    const errors = []; page.on('pageerror', error => errors.push(error.message));
+    await page.goto(app.origin); await page.locator('#results').waitFor({ state: 'visible' });
+    assert.deepEqual(calls, []);
+    await page.locator('#lookup').click();
+    await until(async () => !(await page.locator('#lookup').isDisabled()), 'username lookup');
+    assert.deepEqual(calls, ['101', '102', '103']);
+    assert.match(await page.locator('#rows').textContent(), /@user101v1/);
+    assert.match(await page.locator('#rows').textContent(), /ID 103/);
+    const cached = JSON.parse(await readFile(path.join(directory, '.profile-cache/user-profiles.json'), 'utf8'));
+    assert.equal(cached.users['101'].username, 'user101v1');
+    // A cached current handle must also supersede an older handle in a later archive.
+    await writeFile(path.join(directory, 'following.js'), partText('following', 0, ['101', '102', '103'].map(id => archiveRow('following', id, id === '101' ? { screenName: 'old101' } : {}))));
+    await page.reload(); await page.locator('#results').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#rows').textContent(), /@user102v1/);
+    assert.match(await page.locator('#rows').textContent(), /@user101v1/);
+    await page.locator('#lookup').click();
+    await until(async () => !(await page.locator('#lookup').isDisabled()), 'negative cache reuse');
+    assert.equal(calls.length, 3);
+    await app.close();
+    app = await createApp({ archiveDirectory: directory, profileLookup: lookup });
+    await page.goto(app.origin); await page.locator('#results').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#rows').textContent(), /@user101v1/);
+    assert.equal(calls.length, 3);
+    revision = 2;
+    await page.locator('#update-profiles').click();
+    await until(async () => !(await page.locator('#lookup').isDisabled()), 'manual update');
+    assert.match(await page.locator('#rows').textContent(), /@user101v2/);
+    assert.equal(calls.length, 6);
+    await page.locator('#search').fill('user102v2');
+    assert.equal(await page.locator('#rows tr').count(), 1);
+    const pending = page.waitForEvent('download'); await page.locator('#export').click();
+    const download = await pending;
+    assert.match(await readFile(await download.path(), 'utf8'), /user101v2/);
+    unavailable = true;
+    await page.locator('#update-profiles').click();
+    await until(async () => !(await page.locator('#lookup').isDisabled()), 'failed update');
+    assert.match(await page.locator('#profile-status').textContent(), /暂不可用/);
+    assert.equal(await page.locator('#results').isVisible(), true);
+    assert.match(await page.locator('#rows').textContent(), /@user102v2/);
+    await page.locator('#update-profiles').click();
+    await until(async () => !(await page.locator('#lookup').isDisabled()), 'failure cooldown');
+    assert.equal(calls.length, 7);
+    const bad = await fetch(app.origin + '/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ['../bad'] }) });
+    assert.equal(bad.status, 400);
+    const foreign = await fetch(app.origin + '/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://example.com' }, body: JSON.stringify({ ids: ['101'] }) });
+    assert.equal(foreign.status, 403);
+    const hidden = await fetch(app.origin + '/archives/.profile-cache/user-profiles.json');
+    assert.equal(hidden.status, 404);
+    assert.deepEqual(errors, []);
+  } finally { if (browser) await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
