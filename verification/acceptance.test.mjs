@@ -175,7 +175,7 @@ test('standalone local assets, health and request boundaries work without retire
     assert.doesNotMatch(html, /__ARCHIVE_DIRECTORY__|chrome-extension:|扩展安装/);
     for (const asset of ['/style.css', '/local.js', '/csv.mjs']) assert.equal((await fetch(app.origin + asset)).status, 200);
     for (const retired of ['/install', '/shared.js', '/extension/manifest.json', '/src/server.mjs', '/archives/following.js']) assert.equal((await fetch(app.origin + retired)).status, 404);
-    const health = await fetch(app.origin + '/health'); assert.equal(health.status, 200); assert.deepEqual(await health.json(), { service: 'x-follow-checker-folder', protocol: 1 });
+    const health = await fetch(app.origin + '/health'); assert.equal(health.status, 200); assert.deepEqual(await health.json(), { service: 'x-follow-checker-folder', protocol: 1, profileVersion: 2 });
     assert.equal((await fetch(app.origin + '/health', { headers: { Origin: 'https://evil.invalid' } })).status, 403);
     assert.equal((await fetch(app.origin + '/api/archives', { headers: { 'Sec-Fetch-Site': 'same-site' } })).status, 403);
     const foreignHost = await new Promise((resolve, reject) => {
@@ -253,4 +253,118 @@ test('public username workflow persists cache across reload and restart, updates
     assert.equal(hidden.status, 404);
     assert.deepEqual(errors, []);
   } finally { if (browser) await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('profile details migrate old cache, render local avatars and counts, and refresh only after seven days', { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-details-ui-'));
+  const week = 7 * 24 * 60 * 60 * 1000;
+  let clock = Date.now(); let calls = 0; let failLookup = false; let partialLookup = false;
+  const avatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWZkAAAAASUVORK5CYII=';
+  const lookup = async id => {
+    calls++;
+    if (failLookup) throw new Error('模拟断网');
+    if (partialLookup) return { username: `profile${id}`, name: `Name ${id}`, avatar: null, description: null, followersCount: null, followingCount: null };
+    return { username: `profile${id}`, name: `Name ${id}`, description: id === '201' ? '研究者 <img src=x onerror=alert(1)>' : '', followersCount: id === '201' ? 12345 : -1, followingCount: id === '201' ? 0 : undefined, avatar: id === '201' ? avatar : 'https://example.com/not-allowed.png' };
+  };
+  const options = { archiveDirectory: directory, profileLookup: lookup, profileNow: () => clock };
+  await writeFile(path.join(directory, 'following.js'), partText('following', 0, ['201', '202'].map(id => archiveRow('following', id))));
+  await writeFile(path.join(directory, 'follower.js'), partText('follower', 0, []));
+  await mkdir(path.join(directory, '.profile-cache'));
+  const cacheFile = path.join(directory, '.profile-cache/user-profiles.json');
+  await writeFile(cacheFile, JSON.stringify({ version: 1, users: { '201': { username: 'old201', name: 'Old Name', checkedAt: clock } }, retryAt: 0 }));
+  let app = await createApp(options); let browser;
+  const compare = async () => (await postArchive(app.origin, '.')).json();
+  try {
+    browser = await chromium.launch({ channel: 'chromium', headless: true });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 1050 }, acceptDownloads: true });
+    const network = []; const errors = [];
+    page.on('request', request => { if (/^https?:/.test(request.url())) network.push(request.url()); });
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(app.origin); await page.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(calls, 0);
+    assert.match(await page.locator('#rows').textContent(), /old201/);
+    assert.equal((await compare()).results.find(row => row.id === '201').profileNeedsUpdate, true);
+    assert.equal(await page.locator('#lookup').isVisible(), true);
+    assert.equal(await page.evaluate(() => document.querySelector('#lookup').getBoundingClientRect().top < document.querySelector('#results').getBoundingClientRect().top), true);
+    await page.locator('#lookup').click();
+    await until(async () => !(await page.locator('#lookup').isDisabled()), 'profile details queried');
+    assert.equal(calls, 2);
+    const row = page.locator('#rows tr').filter({ hasText: '@profile201' });
+    assert.equal(await row.locator('img').count(), 1);
+    await until(async () => row.locator('img').evaluate(image => image.complete && image.naturalWidth > 0), 'cached avatar loaded');
+    assert.match(await row.locator('td').nth(2).textContent(), /研究者 <img/);
+    assert.equal(await row.locator('td').nth(3).textContent(), '12,345');
+    assert.equal(await row.locator('td').nth(4).textContent(), '0');
+    const unknown = page.locator('#rows tr').filter({ hasText: '@profile202' });
+    assert.equal(await unknown.locator('td').nth(3).textContent(), '—');
+    assert.equal(await unknown.locator('td').nth(4).textContent(), '—');
+    assert.equal(await unknown.locator('img').count(), 0);
+    assert.equal(await page.locator('#rows img').count(), 1);
+    const cache = JSON.parse(await readFile(cacheFile, 'utf8'));
+    assert.equal(cache.users['201'].avatar, avatar);
+    assert.equal(cache.users['201'].followingCount, 0);
+    assert.equal(cache.users['202'].followersCount, null);
+    await page.locator('#search').fill('研究者'); assert.equal(await page.locator('#rows tr').count(), 1);
+    const pending = page.waitForEvent('download'); await page.locator('#export').click();
+    const download = await pending; const csv = await readFile(await download.path(), 'utf8');
+    assert.match(csv, /简介.*粉丝数.*关注数/); assert.match(csv, /"12345","0"/);
+    await page.locator('#search').fill('');
+    await page.screenshot({ path: path.join(scratch, 'profile-details-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: path.join(scratch, 'profile-details-mobile.png'), fullPage: true });
+    await app.close(); app = await createApp(options);
+    clock += week - 1;
+    await page.goto(app.origin); await page.locator('#results').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#rows img').getAttribute('src'), avatar);
+    await page.locator('#lookup').click(); assert.equal(calls, 2);
+    const post = ids => fetch(app.origin + '/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+    assert.equal((await (await post(['201', '202'])).json()).queried, 0);
+    assert.equal(calls, 2);
+    clock += 1;
+    const expired = (await compare()).results.find(row => row.id === '201');
+    assert.equal(expired.profileNeedsUpdate, true); assert.equal(expired.profileExpired, true); assert.equal(expired.followersCount, 12345);
+    await page.reload(); await page.locator('#results').waitFor({ state: 'visible' });
+    failLookup = true;
+    await page.locator('#lookup').click(); await until(async () => !(await page.locator('#lookup').isDisabled()), 'expired query fails');
+    assert.equal(calls, 3);
+    assert.match(await page.locator('#rows').textContent(), /12,345/);
+    assert.equal(JSON.parse(await readFile(cacheFile, 'utf8')).users['201'].checkedAt, cache.users['201'].checkedAt);
+    clock += 300001; failLookup = false;
+    await page.locator('#lookup').click(); await until(async () => !(await page.locator('#lookup').isDisabled()), 'expired profiles refreshed');
+    assert.equal(calls, 5);
+    assert.equal((await compare()).results.every(row => !row.profileNeedsUpdate), true);
+    partialLookup = true;
+    const partial = await (await fetch(app.origin + '/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ['201'], force: true }) })).json();
+    assert.equal(partial.profiles['201'].avatar, avatar);
+    assert.equal(partial.profiles['201'].followersCount, 12345);
+    assert.equal(partial.profiles['201'].followingCount, 0);
+    assert.match(partial.profiles['201'].description, /研究者/);
+    assert.equal(network.every(url => new URL(url).hostname === '127.0.0.1'), true);
+    assert.deepEqual(errors, []);
+  } finally { if (browser) await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('profile cache capacity sheds old avatar bytes without blocking new profile persistence', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-profile-capacity-'));
+  const cacheDirectory = path.join(directory, '.profile-cache'); await mkdir(cacheDirectory);
+  const avatar = 'data:image/png;base64,' + Buffer.alloc(128 * 1024, 65).toString('base64');
+  const clock = Date.now(); const users = {};
+  for (let id = 1; id <= 119; id++) users[String(id)] = { username: `cached${id}`, checkedAt: clock - id, profileVersion: 2, avatar, followersCount: id, followingCount: 0 };
+  const filename = path.join(cacheDirectory, 'user-profiles.json');
+  await writeFile(filename, JSON.stringify({ version: 1, users, retryAt: 0 }));
+  const app = await createApp({ archiveDirectory: directory, profileNow: () => clock, profileLookup: async id => ({ username: `new${id}`, avatar, followersCount: 100, followingCount: 0 }) });
+  try {
+    const response = await fetch(app.origin + '/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ['201', '202', '203'] }) });
+    assert.equal(response.status, 200);
+    const result = await response.json(); assert.equal(result.queried, 3); assert.equal(result.message, '');
+    const text = await readFile(filename, 'utf8'); const stored = JSON.parse(text);
+    assert.equal(Buffer.byteLength(text) <= 20 * 1024 * 1024, true);
+    assert.equal(Object.keys(stored.users).length, 122);
+    assert.equal(stored.users['203'].username, 'new203');
+    assert.equal(stored.users['119'].followersCount, 119);
+    assert.equal(stored.users['119'].avatar, null);
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });

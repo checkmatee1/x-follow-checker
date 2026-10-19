@@ -9,8 +9,8 @@ import { createProfileCache } from './profiles.mjs';
 const defaultArchiveDirectory = fileURLToPath(new URL('../archives', import.meta.url));
 const escapeHtml = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
-export async function createApp({ port = 0, archiveDirectory = defaultArchiveDirectory, profileLookup } = {}) {
-  const profiles = createProfileCache(path.join(archiveDirectory, '.profile-cache'), { lookup: profileLookup });
+export async function createApp({ port = 0, archiveDirectory = defaultArchiveDirectory, profileLookup, profileNow } = {}) {
+  const profiles = createProfileCache(path.join(archiveDirectory, '.profile-cache'), { lookup: profileLookup, now: profileNow });
   let origin;
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -21,7 +21,7 @@ export async function createApp({ port = 0, archiveDirectory = defaultArchiveDir
     const reply = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); };
     try {
       const pathname = new URL(req.url, origin).pathname;
-      if (pathname === '/health' && req.method === 'GET') return reply(200, { service: 'x-follow-checker-folder', protocol: 1 });
+      if (pathname === '/health' && req.method === 'GET') return reply(200, { service: 'x-follow-checker-folder', protocol: 1, profileVersion: 2 });
       if (pathname === '/api/archives' && req.method === 'GET') {
         const groups = await archiveCatalog(archiveDirectory);
         return reply(200, { directory: archiveDirectory, archives: groups.map(({ id, label, type, signature }) => ({ id, label, type, signature })) });
