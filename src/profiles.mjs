@@ -12,13 +12,20 @@ const MAX_CACHE_BYTES = 20 * 1024 * 1024;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const avatarData = value => typeof value === 'string' && value.length <= 175_000 && /^data:image\/(?:jpeg|png|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value) ? value : null;
 
-async function publicAvatar(value) {
+async function curlRequest(url, { avatar = false } = {}) {
+  const { stdout } = await run('curl', ['-q', '--silent', '--show-error', '--max-time', avatar ? '6' : '12', '--max-filesize', avatar ? '131072' : '5242880', '--proto', '=https', '--write-out', '\n%{http_code}', url], { encoding: null, timeout: avatar ? 8000 : 15_000, maxBuffer: avatar ? 132_096 : 6 * 1024 * 1024 });
+  const split = stdout.lastIndexOf(10);
+  return { status: Number(stdout.subarray(split + 1).toString()), body: stdout.subarray(0, split) };
+}
+
+async function publicAvatar(value, request) {
   let url;
   try { url = new URL(value); } catch { return null; }
   if (url.protocol !== 'https:' || url.hostname !== 'pbs.twimg.com' || url.port || url.username || url.password || !url.pathname.startsWith('/profile_images/')) return null;
   try {
     // Cache raster bytes locally; page rendering never contacts the image host.
-    const { stdout } = await run('curl', ['-q', '--silent', '--show-error', '--fail', '--max-time', '6', '--max-filesize', '131072', '--proto', '=https', url.href], { encoding: null, timeout: 8_000, maxBuffer: 132_096 });
+    const { status, body: stdout } = await request(url.href, { avatar: true });
+    if (status !== 200) return null;
     let type;
     if (stdout.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) type = 'jpeg';
     else if (stdout.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) type = 'png';
@@ -29,16 +36,17 @@ async function publicAvatar(value) {
 }
 
 // Only read embedded JSON. Never execute HTML/scripts or use browser cookies.
-export async function publicProfile(id) {
+export async function publicProfile(id, { request = curlRequest } = {}) {
   const url = `https://syndication.twitter.com/srv/timeline-profile/user-id/${id}`;
-  let stdout;
-  try {
-    ({ stdout } = await run('curl', ['-q', '--silent', '--show-error', '--max-time', '12', '--max-filesize', '5242880', '--proto', '=https', '--write-out', '\n%{http_code}', url], { timeout: 15_000, maxBuffer: 6 * 1024 * 1024 }));
-  } catch { throw new Error('公开查询连接失败或超时；已查到的用户名仍保留。请稍后重试。'); }
-  const split = stdout.lastIndexOf('\n');
-  const status = Number(stdout.slice(split + 1));
-  if (status !== 200) throw new Error(status === 429 ? 'X 公开查询已限流，请稍后重试。' : 'X 公开查询暂不可用，请稍后重试。');
-  const match = /<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(stdout.slice(0, split));
+  let response;
+  try { response = await request(url); }
+  catch { throw new Error('公开查询连接失败或超时；已查到的用户名仍保留。请稍后重试。'); }
+  if (response.status !== 200) {
+    const error = new Error(response.status === 429 ? 'X 公开查询已限流，请稍后重试。' : 'X 公开查询暂不可用，请稍后重试。');
+    if (response.status === 429) error.code = 'RATE_LIMIT';
+    throw error;
+  }
+  const match = /<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(response.body.toString('utf8'));
   if (!match) throw new Error('公开查询页面格式已变化，未保存错误数据。');
   let page;
   try { page = JSON.parse(match[1]).props?.pageProps; } catch { throw new Error('公开查询返回了无效数据。'); }
@@ -52,7 +60,7 @@ export async function publicProfile(id) {
     username, name: typeof user?.name === 'string' ? user.name.slice(0, 300) : username,
     description: typeof user?.description === 'string' ? user.description.slice(0, 1600) : null,
     followersCount: count(user?.followers_count), followingCount: count(user?.friends_count),
-    avatar: await publicAvatar(user?.profile_image_url_https)
+    avatar: await publicAvatar(user?.profile_image_url_https, request)
   };
 }
 

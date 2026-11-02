@@ -175,7 +175,9 @@ test('standalone local assets, health and request boundaries work without retire
     assert.doesNotMatch(html, /__ARCHIVE_DIRECTORY__|chrome-extension:|扩展安装/);
     for (const asset of ['/style.css', '/local.js', '/csv.mjs']) assert.equal((await fetch(app.origin + asset)).status, 200);
     for (const retired of ['/install', '/shared.js', '/extension/manifest.json', '/src/server.mjs', '/archives/following.js']) assert.equal((await fetch(app.origin + retired)).status, 404);
-    const health = await fetch(app.origin + '/health'); assert.equal(health.status, 200); assert.deepEqual(await health.json(), { service: 'x-follow-checker-folder', protocol: 1, profileVersion: 2 });
+    const health = await fetch(app.origin + '/health'); assert.equal(health.status, 200); assert.deepEqual(await health.json(), { service: 'x-follow-checker-folder', protocol: 1, profileVersion: 2, proxyVersion: 1 });
+    const unavailable = await (await fetch(app.origin + '/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ['123'] }) })).json();
+    assert.match(unavailable.message, /独立临时代理未接入/);
     assert.equal((await fetch(app.origin + '/health', { headers: { Origin: 'https://evil.invalid' } })).status, 403);
     assert.equal((await fetch(app.origin + '/api/archives', { headers: { 'Sec-Fetch-Site': 'same-site' } })).status, 403);
     const foreignHost = await new Promise((resolve, reject) => {
@@ -367,4 +369,91 @@ test('profile cache capacity sheds old avatar bytes without blocking new profile
     assert.equal(stored.users['119'].followersCount, 119);
     assert.equal(stored.users['119'].avatar, null);
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 rotation and cleans up on exit', { timeout: 90_000 }, async () => {
+  // Real core and curl with a local TLS fixture: no X, subscriptions or user nodes.
+  const { access, readdir } = await import('node:fs/promises');
+  try { await access('/opt/homebrew/bin/mihomo'); } catch { return; }
+  const tls = await import('node:tls');
+  const net = await import('node:net');
+  const { startPrivateProxy } = await import('../src/proxy.mjs');
+  const directory = await mkdtemp(path.join(tmpdir(), 'x-proxy-acceptance-'));
+  const source = path.join(directory, 'source.json');
+  const proxyServers = []; const connections = new Set();
+  const requests = []; let alwaysLimit = false; let profiles = 0; let proxy;
+  const originalCA = process.env.CURL_CA_BUNDLE;
+  try {
+    const key = path.join(directory, 'fixture.key'); const cert = path.join(directory, 'fixture.crt');
+    await runFixture('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=syndication.twitter.com', '-addext', 'subjectAltName=DNS:syndication.twitter.com,DNS:pbs.twimg.com', '-keyout', key, '-out', cert, '-days', '1']);
+    const secureContext = tls.createSecureContext({ key: await readFile(key), cert: await readFile(cert) });
+    process.env.CURL_CA_BUNDLE = cert;
+    const nodes = [];
+    for (let index = 0; index < 3; index++) {
+      const origin = http.createServer((req, res) => {
+        requests.push({ index, url: req.url, host: req.headers.host, at: Date.now() });
+        if (req.headers.host === 'pbs.twimg.com') { res.end(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])); return; }
+        if (++profiles === 1 || alwaysLimit) { res.writeHead(429); res.end('fixture limit'); return; }
+        const id = req.url.split('/').at(-1);
+        const body = { props: { pageProps: { userId: id, headerProps: { screenName: 'fixture_user' }, timeline: { entries: [{ content: { tweet: { user: { id_str: id, screen_name: 'fixture_user', name: 'Fixture', description: 'local only', followers_count: 12, friends_count: 3, profile_image_url_https: 'https://pbs.twimg.com/profile_images/fixture.png' } } } }] } } } };
+        res.end(`<script id="__NEXT_DATA__">${JSON.stringify(body)}</script>`);
+      });
+      const tunnel = http.createServer();
+      tunnel.on('connect', (req, socket) => {
+        assert.ok(['syndication.twitter.com:443', 'pbs.twimg.com:443'].includes(req.url));
+        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        const encrypted = new tls.TLSSocket(socket, { isServer: true, secureContext });
+        encrypted.on('error', () => {}); origin.emit('connection', encrypted);
+      });
+      tunnel.on('connection', socket => { connections.add(socket); socket.on('close', () => connections.delete(socket)); });
+      await new Promise(resolve => tunnel.listen(0, '127.0.0.1', resolve)); proxyServers.push(tunnel);
+      nodes.push({ name: `fixture-${index}`, type: 'http', server: '127.0.0.1', port: tunnel.address().port });
+    }
+    await writeFile(path.join(directory, 'cached.json'), JSON.stringify({ proxies: nodes.slice(1) }));
+    const sourceText = JSON.stringify({ 'mixed-port': proxyServers[0].address().port, 'allow-lan': true, tun: { enable: true }, proxies: nodes.slice(0, 1), 'proxy-providers': { cached: { type: 'file', path: 'cached.json' } } });
+    await writeFile(source, sourceText);
+    const before = new Set((await readdir(tmpdir())).filter(name => name.startsWith('x-follow-mihomo-')));
+    proxy = await startPrivateProxy({ source });
+    assert.equal(proxy.status().nodeCount, 3);
+    assert.equal(proxy.status().state, 'ready');
+    assert.ok(!nodes.some(node => node.port === proxy.status().port));
+    const created = (await readdir(tmpdir())).filter(name => name.startsWith('x-follow-mihomo-') && !before.has(name));
+    assert.equal(created.length, 1);
+    const runtimeDirectory = path.join(tmpdir(), created[0]);
+    const runtimeConfig = JSON.parse(await readFile(path.join(runtimeDirectory, 'config.yaml'), 'utf8'));
+    assert.equal(runtimeConfig['allow-lan'], false); assert.equal(runtimeConfig.tun.enable, false);
+    assert.equal(runtimeConfig['bind-address'], '127.0.0.1');
+    assert.ok(runtimeConfig['external-controller'].startsWith('127.0.0.1:'));
+    const found = await proxy.lookup('123');
+    assert.equal(found.username, 'fixture_user'); assert.equal(found.followersCount, 12);
+    assert.ok(found.avatar.startsWith('data:image/png;base64,'));
+    const firstProfiles = requests.filter(r => r.host === 'syndication.twitter.com');
+    assert.equal(firstProfiles.length, 2); assert.notEqual(firstProfiles[0].index, firstProfiles[1].index);
+    assert.ok(firstProfiles[1].at - firstProfiles[0].at >= 14_500);
+    assert.equal(requests.find(r => r.host === 'pbs.twimg.com').index, firstProfiles[1].index);
+    alwaysLimit = true;
+    await assert.rejects(proxy.lookup('456'), /次数已达上限/);
+    assert.equal(profiles, 4); // two switches total; never a fourth-node loop
+    assert.equal(await readFile(source, 'utf8'), sourceText);
+    const port = proxy.status().port;
+    await proxy.close();
+    assert.equal(proxy.status().state, 'stopped');
+    await assert.rejects(proxy.lookup('789'), /不会直连/);
+    await assert.rejects(access(runtimeDirectory));
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1'); socket.on('error', reject); socket.on('connect', () => { socket.destroy(); resolve(); });
+    }));
+    await assert.rejects(startPrivateProxy({ source: path.join(directory, 'missing.yaml') }), /无法启动/);
+    const { spawn } = await import('node:child_process');
+    const url = new URL('../src/proxy.mjs', import.meta.url).href;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `import { startPrivateProxy } from ${JSON.stringify(url)}; await startPrivateProxy({source:${JSON.stringify(source)}}); process.exit(0);`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    assert.equal(await new Promise(resolve => child.once('exit', resolve)), 0);
+    await until(async () => !(await readdir(tmpdir())).some(name => name.startsWith('x-follow-mihomo-') && !before.has(name)), 'parent exit supervisor cleanup');
+  } finally {
+    if (originalCA === undefined) delete process.env.CURL_CA_BUNDLE; else process.env.CURL_CA_BUNDLE = originalCA;
+    await proxy?.close();
+    for (const socket of connections) socket.destroy();
+    await Promise.all(proxyServers.map(server => new Promise(resolve => server.close(resolve))));
+    await rm(directory, { recursive: true, force: true });
+  }
 });

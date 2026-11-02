@@ -42,7 +42,7 @@ async function refresh() {
   if (busy) return; lock(true); clear();
   try {
     const health = await request('/health');
-    if (health.profileVersion !== 2) throw new Error('后台仍是旧版本。请关闭原启动终端，再双击“启动工具.command”并刷新页面。');
+    if (health.profileVersion !== 2 || health.proxyVersion !== 1) throw new Error('后台仍是旧版本。请关闭原启动终端，再双击“启动工具.command”并刷新页面。');
     const catalog = await request('/api/archives');
     const choices = catalog.archives.map(archive => { const option = document.createElement('option'); option.value = archive.id; option.textContent = archive.label + (archive.type === 'zip' ? '（ZIP）' : '（已解压）'); return option; });
     $('archive-source').replaceChildren(...choices);
@@ -69,7 +69,7 @@ async function lookupProfiles(force = false) {
   let processed = 0; let queried = 0; let missing = 0;
   try {
     for (let offset = 0; offset < selected.length && !stopLookup; offset += 3) {
-      $('profile-status').textContent = `正在查询 ${processed} / ${selected.length}；正在获取头像、简介和数量；每个账号完成后保存到本地…`;
+      $('profile-status').textContent = `正在查询 ${processed} / ${selected.length}；通过独立代理获取头像、简介和数量；限流时会等待并有限换节点，每个账号完成后保存…`;
       const batch = selected.slice(offset, offset + 3);
       const data = await request('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: batch.map(row => row.id), force }) });
       for (const row of results) {
