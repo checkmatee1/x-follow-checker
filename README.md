@@ -54,7 +54,7 @@
 
 ### 独立临时 mihomo
 
-双击启动工具时，会使用本机 Homebrew 的 `/opt/homebrew/bin/mihomo`，从 `/opt/homebrew/etc/mihomo/config.yaml` 的内联节点和本地提供者缓存创建独立临时实例。需要 Python 3 与 PyYAML。只读取本地节点快照，不更新订阅，也不复制配置进项目。
+双击启动工具时，会使用本机 Homebrew 的 `/opt/homebrew/bin/mihomo`，从 `/opt/homebrew/etc/mihomo/config.yaml` 的内联节点和本地提供者缓存创建独立临时实例。需要 Python 3 与 PyYAML；启动器会检查 PATH 中的 Python，并兼容本机已有的 Homebrew Anaconda Python，不安装全局依赖。只读取本地节点快照，不更新订阅，也不复制配置进项目。
 
 实例使用随机的本机端口及独立控制器，只代理资料和头像请求。不改系统代理、常驻 mihomo 的节点、TUN、PF 或缓存。主进程退出时监督进程关闭核心并删除临时配置；临时配置与节点快照仅保存在权限受限的系统临时目录，核心日志不输出。
 

@@ -18,13 +18,21 @@ async function unusedPort() {
 }
 
 // Called by the launcher only. Importing this module or comparing archives is offline.
-export async function startPrivateProxy({ source = '/opt/homebrew/etc/mihomo/config.yaml', binary = '/opt/homebrew/bin/mihomo', python = 'python3' } = {}) {
+export async function startPrivateProxy({ source = '/opt/homebrew/etc/mihomo/config.yaml', binary = '/opt/homebrew/bin/mihomo', python } = {}) {
+  // Finder/Terminal PATH can select a different Python than the interactive shell.
+  // Reuse an installed YAML-capable interpreter; never install global packages.
+  let interpreter;
+  for (const candidate of python ? [python] : ['python3', '/opt/homebrew/anaconda3/bin/python3']) {
+    try { await run(candidate, ['-c', 'import yaml'], { timeout: 3000, maxBuffer: 1024 }); interpreter = candidate; break; }
+    catch { /* No raw interpreter diagnostics: only report the missing dependency. */ }
+  }
+  if (!interpreter) throw new Error('没有找到带 PyYAML 的 Python 3，资料查询已停用，不会直连。');
   const directory = await mkdtemp(path.join(tmpdir(), 'x-follow-mihomo-'));
   const port = await unusedPort(); let controllerPort = await unusedPort();
   while (controllerPort === port) controllerPort = await unusedPort();
   const secret = randomBytes(32).toString('hex');
   const controller = `http://127.0.0.1:${controllerPort}`;
-  const child = spawn(python, [fileURLToPath(new URL('../scripts/mihomo-runtime.py', import.meta.url))], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = spawn(interpreter, [fileURLToPath(new URL('../scripts/mihomo-runtime.py', import.meta.url))], { stdio: ['pipe', 'pipe', 'ignore'] });
   let exited = false; let stopping = false; let providerCount = null; let startupOutput = '';
   child.stdout.on('data', chunk => {
     startupOutput += chunk.toString();

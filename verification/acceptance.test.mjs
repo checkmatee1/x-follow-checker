@@ -413,7 +413,7 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
     const sourceText = JSON.stringify({ 'mixed-port': proxyServers[0].address().port, 'allow-lan': true, tun: { enable: true }, proxies: nodes.slice(0, 1), 'proxy-providers': { cached: { type: 'file', path: 'cached.json' } } });
     await writeFile(source, sourceText);
     const before = new Set((await readdir(tmpdir())).filter(name => name.startsWith('x-follow-mihomo-')));
-    proxy = await startPrivateProxy({ source });
+    proxy = await startPrivateProxy({ source, python: '/opt/homebrew/anaconda3/bin/python3' });
     assert.equal(proxy.status().nodeCount, 3);
     assert.equal(proxy.status().state, 'ready');
     assert.ok(!nodes.some(node => node.port === proxy.status().port));
@@ -446,7 +446,7 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
     await assert.rejects(startPrivateProxy({ source: path.join(directory, 'missing.yaml') }), /无法启动/);
     const { spawn } = await import('node:child_process');
     const url = new URL('../src/proxy.mjs', import.meta.url).href;
-    const child = spawn(process.execPath, ['--input-type=module', '-e', `import { startPrivateProxy } from ${JSON.stringify(url)}; await startPrivateProxy({source:${JSON.stringify(source)}}); process.exit(0);`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `import { startPrivateProxy } from ${JSON.stringify(url)}; await startPrivateProxy({source:${JSON.stringify(source)}}); process.exit(0);`], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' } });
     assert.equal(await new Promise(resolve => child.once('exit', resolve)), 0);
     await until(async () => !(await readdir(tmpdir())).some(name => name.startsWith('x-follow-mihomo-') && !before.has(name)), 'parent exit supervisor cleanup');
   } finally {
