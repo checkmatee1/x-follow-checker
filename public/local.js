@@ -18,8 +18,9 @@ function render() {
       const image = document.createElement('img'); image.className = 'avatar'; image.src = row.avatar; image.alt = `${row.name}的头像`; image.loading = 'lazy'; image.decoding = 'async'; image.width = 44; image.height = 44;
       image.addEventListener('error', () => { image.replaceWith(fallback); }, { once: true }); identity.append(image);
     } else identity.append(fallback);
-    const name = document.createElement('span'); name.className = 'account-name'; name.textContent = row.name; identity.append(name); account.append(identity);
-    const id = document.createElement('td'); id.textContent = row.username ? '@' + row.username : 'ID ' + row.id;
+    const name = document.createElement('a'); name.className = 'account-name'; name.href = row.url; name.target = '_blank'; name.rel = 'noopener noreferrer'; name.textContent = row.name; identity.append(name); account.append(identity);
+    const id = document.createElement('td');
+    const username = document.createElement('a'); username.href = row.url; username.target = '_blank'; username.rel = 'noopener noreferrer'; username.textContent = row.username ? '@' + row.username : 'ID ' + row.id; id.append(username);
     const description = document.createElement('td'); description.className = 'profile-description'; description.textContent = row.description ?? '—';
     if (row.description === '') description.textContent = '暂无简介';
     const followers = document.createElement('td'); followers.className = 'profile-count'; followers.textContent = Number.isSafeInteger(row.followersCount) && row.followersCount >= 0 ? row.followersCount.toLocaleString() : '—';

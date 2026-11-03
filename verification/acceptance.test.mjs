@@ -64,7 +64,9 @@ test('folder homepage reads dropped ZIP automatically, refreshes, separates arch
     assert.equal(await page.locator('#rows img').count(), 0);
     await page.locator('#search').fill('9007199254740993');
     assert.equal(await page.locator('#rows tr').count(), 1);
-    assert.equal(await page.locator('#rows a').getAttribute('href'), 'https://x.com/i/user/9007199254740993');
+    assert.equal(await page.locator('#rows a').first().getAttribute('href'), 'https://x.com/i/user/9007199254740993');
+    assert.equal(await page.locator('#rows a').count(), 3);
+    for (const link of await page.locator('#rows a').all()) { assert.equal(await link.getAttribute('target'), '_blank'); assert.equal(await link.getAttribute('rel'), 'noopener noreferrer'); }
     const pending = page.waitForEvent('download');
     await page.locator('#export').click();
     const download = await pending;
