@@ -40,7 +40,11 @@ export async function publicProfile(id, { request = curlRequest } = {}) {
   const url = `https://syndication.twitter.com/srv/timeline-profile/user-id/${id}`;
   let response;
   try { response = await request(url); }
-  catch { throw new Error('公开查询连接失败或超时；已查到的用户名仍保留。请稍后重试。'); }
+  catch (cause) {
+    const error = new Error(cause.code === 'PROXY_CONNECTION' ? '当前代理节点连接失败或 TLS 握手失败，请稍后重试。' : '公开查询连接失败或超时；已查到的用户名仍保留。请稍后重试。');
+    if (cause.code === 'PROXY_CONNECTION') error.code = cause.code;
+    throw error;
+  }
   if (response.status !== 200) {
     const error = new Error(response.status === 429 ? 'X 公开查询已限流，请稍后重试。' : 'X 公开查询暂不可用，请稍后重试。');
     if (response.status === 429) error.code = 'RATE_LIMIT';
@@ -140,7 +144,7 @@ export function createProfileCache(directory, { lookup = publicProfile, now = Da
           const cached = profile(entry);
           if (!force && fresh(entry)) { profiles[id] = cached; continue; }
           if (!force && entry?.retryAt > now()) { if (cached) profiles[id] = cached; missing++; continue; }
-          if (data.retryAt > now()) { message = '公开查询暂不可用，请五分钟后重试；本地缓存仍可使用。'; break; }
+          if (data.retryAt > now()) { message = typeof data.lastError === 'string' ? data.lastError + ' 当前仍在五分钟暂停期，本地缓存可继续使用。' : '公开查询暂不可用，请五分钟后重试；本地缓存仍可使用。'; break; }
           try {
             queried++;
             const found = await lookup(id);
@@ -162,6 +166,7 @@ export function createProfileCache(directory, { lookup = publicProfile, now = Da
           } catch (error) {
             data.retryAt = now() + 5 * 60 * 1000;
             message = error.message;
+            data.lastError = message;
           }
           await save(data); // Persist each result, including before a later request fails.
           if (profiles[id]) profiles[id] = profile(data.users[id]);

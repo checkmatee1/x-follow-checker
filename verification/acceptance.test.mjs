@@ -381,7 +381,7 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
   const directory = await mkdtemp(path.join(tmpdir(), 'x-proxy-acceptance-'));
   const source = path.join(directory, 'source.json');
   const proxyServers = []; const connections = new Set();
-  const requests = []; let alwaysLimit = false; let profiles = 0; let proxy;
+  const requests = []; let alwaysLimit = false; let profiles = 0; let proxy; let failTunnel = true; let allowFirstProfile = true;
   const originalCA = process.env.CURL_CA_BUNDLE;
   try {
     const key = path.join(directory, 'fixture.key'); const cert = path.join(directory, 'fixture.crt');
@@ -393,13 +393,14 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
       const origin = http.createServer((req, res) => {
         requests.push({ index, url: req.url, host: req.headers.host, at: Date.now() });
         if (req.headers.host === 'pbs.twimg.com') { res.end(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])); return; }
-        if (++profiles === 1 || alwaysLimit) { res.writeHead(429); res.end('fixture limit'); return; }
+        if ((++profiles === 1 && !allowFirstProfile) || alwaysLimit) { res.writeHead(429); res.end('fixture limit'); return; }
         const id = req.url.split('/').at(-1);
         const body = { props: { pageProps: { userId: id, headerProps: { screenName: 'fixture_user' }, timeline: { entries: [{ content: { tweet: { user: { id_str: id, screen_name: 'fixture_user', name: 'Fixture', description: 'local only', followers_count: 12, friends_count: 3, profile_image_url_https: 'https://pbs.twimg.com/profile_images/fixture.png' } } } }] } } } };
         res.end(`<script id="__NEXT_DATA__">${JSON.stringify(body)}</script>`);
       });
       const tunnel = http.createServer();
       tunnel.on('connect', (req, socket) => {
+        if (failTunnel) { failTunnel = false; socket.destroy(); return; }
         assert.ok(['syndication.twitter.com:443', 'pbs.twimg.com:443'].includes(req.url));
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         const encrypted = new tls.TLSSocket(socket, { isServer: true, secureContext });
@@ -424,6 +425,12 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
     assert.equal(runtimeConfig['allow-lan'], false); assert.equal(runtimeConfig.tun.enable, false);
     assert.equal(runtimeConfig['bind-address'], '127.0.0.1');
     assert.ok(runtimeConfig['external-controller'].startsWith('127.0.0.1:'));
+    const recovered = await proxy.lookup('122');
+    assert.equal(recovered.username, 'fixture_user');
+    assert.equal(failTunnel, false);
+    await proxy.close();
+    proxy = await startPrivateProxy({ source });
+    requests.length = 0; profiles = 0; allowFirstProfile = false;
     const found = await proxy.lookup('123');
     assert.equal(found.username, 'fixture_user'); assert.equal(found.followersCount, 12);
     assert.ok(found.avatar.startsWith('data:image/png;base64,'));

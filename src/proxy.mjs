@@ -93,7 +93,13 @@ export async function startPrivateProxy({ source = '/opt/homebrew/etc/mihomo/con
     const request = async (url, { avatar = false } = {}) => {
       if (exited || stopping) throw new Error('临时代理已退出，资料查询已停止，不会直连。');
       const args = ['-q', '--silent', '--show-error', '--proxy', `http://127.0.0.1:${port}`, '--noproxy', '', '--max-time', avatar ? '6' : '12', '--max-filesize', avatar ? '131072' : '5242880', '--proto', '=https', '--write-out', '\n%{http_code}', url];
-      const { stdout } = await run('curl', args, { encoding: null, timeout: avatar ? 8000 : 15_000, maxBuffer: avatar ? 132_096 : 6 * 1024 * 1024, signal: abort.signal });
+      let stdout;
+      try { ({ stdout } = await run('curl', args, { encoding: null, timeout: avatar ? 8000 : 15_000, maxBuffer: avatar ? 132_096 : 6 * 1024 * 1024, signal: abort.signal })); }
+      catch (cause) {
+        const error = new Error('当前代理节点连接失败或 TLS 握手失败，请稍后重试。');
+        if (!stopping && !exited && [5, 6, 7, 28, 35, 52, 55, 56, 60].includes(cause.code)) error.code = 'PROXY_CONNECTION';
+        throw error;
+      }
       const split = stdout.lastIndexOf(10);
       return { status: Number(stdout.subarray(split + 1).toString()), body: stdout.subarray(0, split) };
     };
@@ -107,14 +113,15 @@ export async function startPrivateProxy({ source = '/opt/homebrew/etc/mihomo/con
           lastQuery = Date.now();
           try { return await publicProfile(id, { request }); }
           catch (error) {
-            // All other failures keep the existing cache cooldown. Never rotate
-            // indefinitely or treat an unrelated connection failure as HTTP 429.
-            if (error.code !== 'RATE_LIMIT') throw error;
+            // Transport failures can select another node too, using the same bounded
+            // budget. Parsing errors never rotate, and certificate checks stay on.
+            if (!['RATE_LIMIT', 'PROXY_CONNECTION'].includes(error.code)) throw error;
             unavailableUntil.set(nodes[index], Date.now() + 30 * 60_000);
             switches = switches.filter(at => Date.now() - at < 30 * 60_000);
-            const next = nodes.findIndex((name, i) => i !== index && !(unavailableUntil.get(name) > Date.now()));
-            if (next < 0 || switches.length >= 2) throw new Error('X 公开查询仍被限流，自动换节点次数已达上限或没有候选节点；请稍后重试。');
-            await delay(15_000, undefined, { signal: abort.signal });
+            const candidates = nodes.map((name, i) => ({ name, i })).filter(({ name, i }) => i !== index && !(unavailableUntil.get(name) > Date.now()));
+            const next = candidates.length ? candidates[randomInt(candidates.length)].i : -1;
+            if (next < 0 || switches.length >= 2) throw new Error(error.code === 'RATE_LIMIT' ? 'X 公开查询仍被限流，自动换节点次数已达上限或没有候选节点；请稍后重试。' : '代理节点连接失败，自动换节点次数已达上限或没有候选节点；请稍后重试。');
+            await delay(error.code === 'RATE_LIMIT' ? 15_000 : 2000, undefined, { signal: abort.signal });
             await selectNode(next); switches.push(Date.now());
           }
         }
