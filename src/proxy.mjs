@@ -81,7 +81,7 @@ export async function startPrivateProxy({ source = '/opt/homebrew/etc/mihomo/con
     const nodeDetails = new Map([...Object.entries(all.proxies ?? {}), ...providerNodes.map(node => [node.name, node])]);
     const nodes = [...new Set(group.all)].filter(name => nodeDetails.has(name) && !['direct', 'reject', 'rejectdrop', 'pass', 'selector', 'urltest', 'fallback', 'loadbalance'].includes(String(nodeDetails.get(name).type).replace(/[-_]/g, '').toLowerCase()));
     if (!nodes.length) throw new Error('本地缓存没有可用代理节点，资料查询已停用，不会直连。');
-    let index = randomInt(nodes.length); let lastQuery = 0; let switches = [];
+    let index = randomInt(nodes.length); let lastQuery = 0;
     const unavailableUntil = new Map();
     async function selectNode(next) {
       await api('/proxies/XFC', { method: 'PUT', body: JSON.stringify({ name: nodes[next] }) });
@@ -113,16 +113,15 @@ export async function startPrivateProxy({ source = '/opt/homebrew/etc/mihomo/con
           lastQuery = Date.now();
           try { return await publicProfile(id, { request }); }
           catch (error) {
-            // Transport failures can select another node too, using the same bounded
-            // budget. Parsing errors never rotate, and certificate checks stay on.
+            // Transport failures can select another node too, without a fixed switch count.
+            // Each failed node has its own cooldown. Parsing errors never rotate, and certificate checks stay on.
             if (!['RATE_LIMIT', 'PROXY_CONNECTION'].includes(error.code)) throw error;
             unavailableUntil.set(nodes[index], Date.now() + 30 * 60_000);
-            switches = switches.filter(at => Date.now() - at < 30 * 60_000);
             const candidates = nodes.map((name, i) => ({ name, i })).filter(({ name, i }) => i !== index && !(unavailableUntil.get(name) > Date.now()));
             const next = candidates.length ? candidates[randomInt(candidates.length)].i : -1;
-            if (next < 0 || switches.length >= 2) throw new Error(error.code === 'RATE_LIMIT' ? 'X 公开查询仍被限流，自动换节点次数已达上限或没有候选节点；请稍后重试。' : '代理节点连接失败，自动换节点次数已达上限或没有候选节点；请稍后重试。');
+            if (next < 0) throw new Error(error.code === 'RATE_LIMIT' ? 'X 公开查询仍被限流，所有候选节点暂不可用；请稍后重试。' : '代理节点连接失败，所有候选节点暂不可用；请稍后重试。');
             await delay(error.code === 'RATE_LIMIT' ? 15_000 : 2000, undefined, { signal: abort.signal });
-            await selectNode(next); switches.push(Date.now());
+            await selectNode(next);
           }
         }
       }

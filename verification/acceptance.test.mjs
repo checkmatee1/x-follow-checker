@@ -371,7 +371,7 @@ test('profile cache capacity sheds old avatar bytes without blocking new profile
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 rotation and cleans up on exit', { timeout: 90_000 }, async () => {
+test('private mihomo isolates cached nodes, proxies profile/avatar, rotates beyond two switches and cleans up on exit', { timeout: 90_000 }, async () => {
   // Real core and curl with a local TLS fixture: no X, subscriptions or user nodes.
   const { access, readdir } = await import('node:fs/promises');
   try { await access('/opt/homebrew/bin/mihomo'); } catch { return; }
@@ -389,7 +389,7 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
     const secureContext = tls.createSecureContext({ key: await readFile(key), cert: await readFile(cert) });
     process.env.CURL_CA_BUNDLE = cert;
     const nodes = [];
-    for (let index = 0; index < 3; index++) {
+    for (let index = 0; index < 4; index++) {
       const origin = http.createServer((req, res) => {
         requests.push({ index, url: req.url, host: req.headers.host, at: Date.now() });
         if (req.headers.host === 'pbs.twimg.com') { res.end(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])); return; }
@@ -415,7 +415,7 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
     await writeFile(source, sourceText);
     const before = new Set((await readdir(tmpdir())).filter(name => name.startsWith('x-follow-mihomo-')));
     proxy = await startPrivateProxy({ source, python: '/opt/homebrew/anaconda3/bin/python3' });
-    assert.equal(proxy.status().nodeCount, 3);
+    assert.equal(proxy.status().nodeCount, 4);
     assert.equal(proxy.status().state, 'ready');
     assert.ok(!nodes.some(node => node.port === proxy.status().port));
     const created = (await readdir(tmpdir())).filter(name => name.startsWith('x-follow-mihomo-') && !before.has(name));
@@ -439,8 +439,8 @@ test('private mihomo isolates cached nodes, proxies profile/avatar, bounds 429 r
     assert.ok(firstProfiles[1].at - firstProfiles[0].at >= 14_500);
     assert.equal(requests.find(r => r.host === 'pbs.twimg.com').index, firstProfiles[1].index);
     alwaysLimit = true;
-    await assert.rejects(proxy.lookup('456'), /次数已达上限/);
-    assert.equal(profiles, 4); // two switches total; never a fourth-node loop
+    await assert.rejects(proxy.lookup('456'), /所有候选节点暂不可用/);
+    assert.equal(profiles, 5); // all four nodes tried: three switches, then pool exhaustion
     assert.equal(await readFile(source, 'utf8'), sourceText);
     const port = proxy.status().port;
     await proxy.close();
